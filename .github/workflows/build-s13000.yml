@@ -1,22 +1,21 @@
-name: "SL3000 Full Auto Build (25.12 aligned three-piece)"
+name: Build SL3000-EMMC Firmware (Full Auto)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-    # -------------------------------
-    # 基础准备：拉取你自己的 25.12 分支
-    # -------------------------------
-    - name: "Checkout repository"
+    # 1. 拉代码（你的源分支）
+    - name: Checkout
       uses: actions/checkout@v4
       with:
-        ref: "immortalwrt-25.12"  # ← 这里改成你 25.12 源的分支名
+        ref: "immortalwrt-upstream"
 
-    - name: "Clean system disk"
+    # 2. 清理系统
+    - name: Clean system
       run: |
         df -h
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -25,20 +24,16 @@ jobs:
         sudo rm -rf /var/lib/apt/lists/*
         df -h
 
-    # -------------------------------
-    # 迁移到 /mnt（减轻根盘压力）
-    # -------------------------------
-    - name: "Move build to /mnt"
+    # 3. 移动到 /mnt，后续都用 $WORKDIR
+    - name: Move workspace to /mnt
       run: |
         sudo mkdir -p /mnt/openwrt
         sudo chown $USER:$USER /mnt/openwrt
         rsync -a . /mnt/openwrt/
         echo "WORKDIR=/mnt/openwrt" >> $GITHUB_ENV
 
-    # -------------------------------
-    # 缓存：dl / ccache / toolchain
-    # -------------------------------
-    - name: "Restore DL cache"
+    # 4. 缓存 dl / ccache / toolchain
+    - name: Restore DL cache
       uses: actions/cache@v3
       with:
         path: "/mnt/openwrt/dl"
@@ -46,7 +41,7 @@ jobs:
         restore-keys: |
           dl-cache-
 
-    - name: "Restore CCACHE"
+    - name: Restore ccache
       uses: actions/cache@v3
       with:
         path: "/home/runner/.ccache"
@@ -54,23 +49,21 @@ jobs:
         restore-keys: |
           ccache-
 
-    - name: "Limit CCACHE size"
+    - name: Limit ccache size
       run: ccache -M 2G || true
 
-    - name: "Restore toolchain cache"
+    - name: Restore toolchain cache
       uses: actions/cache@v3
       with:
         path: |
           /mnt/openwrt/staging_dir
           /mnt/openwrt/build_dir/toolchain-*
-        key: toolchain-${{ hashFiles('toolchain/**', 'target/linux/**', '.config') }}
+        key: toolchain-${{ hashFiles('toolchain/**', 'target/linux/**') }}
         restore-keys: |
           toolchain-
 
-    # -------------------------------
-    # 安装依赖
-    # -------------------------------
-    - name: "Install dependencies"
+    # 5. 安装依赖
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -82,248 +75,119 @@ jobs:
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
 
-    - name: "Allow root configure"
+    - name: Allow root configure
       run: echo "FORCE_UNSAFE_CONFIGURE=1" >> $GITHUB_ENV
 
-    # -------------------------------
-    # 清理构建目录（保留 dl / toolchain 缓存）
-    # -------------------------------
-    - name: "Aggressive clean"
+    # 6. 清理构建目录
+    - name: Aggressive clean
       run: |
         cd $WORKDIR
-        rm -rf bin tmp build_dir/stamp .config.old || true
+        rm -rf bin tmp build_dir/stamp .config .config.old || true
         df -h
 
-    # -------------------------------
-    # 写入并规范化 .config（三件套之一）
-    # 这里用的是你之前“修复版”思路，去掉冗余 WiFi/kernel 项
-    # -------------------------------
-    - name: "Inject SL3000 config"
+    # 7. 写入 SL3000-EMMC 的 .config（核心三件套之一）
+    - name: Create .config for SL3000-EMMC
       run: |
         cd $WORKDIR
-
         cat > .config << 'EOF'
-        ########################################
-        # Target / Device
-        ########################################
-        CONFIG_TARGET_mediatek=y
-        CONFIG_TARGET_mediatek_filogic=y
-        CONFIG_TARGET_mediatek_filogic_DEVICE_sl3000-emmc=y
-
-        ########################################
-        # RootFS
-        ########################################
-        CONFIG_TARGET_ROOTFS_SQUASHFS=y
-
-        ########################################
-        # 基础系统
-        ########################################
-        CONFIG_PACKAGE_base-files=y
-        CONFIG_PACKAGE_busybox=y
-        CONFIG_PACKAGE_ca-certificates=y
-        CONFIG_PACKAGE_dnsmasq-full=y
-        CONFIG_PACKAGE_dropbear=y
-        CONFIG_PACKAGE_firewall4=y
-        CONFIG_PACKAGE_iptables-nft=y
-        CONFIG_PACKAGE_ip6tables-nft=y
-        CONFIG_PACKAGE_odhcp6c=y
-        CONFIG_PACKAGE_odhcpd-ipv6only=y
-        CONFIG_PACKAGE_ppp=y
-        CONFIG_PACKAGE_ppp-mod-pppoe=y
-        CONFIG_PACKAGE_ubus=y
-        CONFIG_PACKAGE_ubusd=y
-        CONFIG_PACKAGE_uci=y
-        CONFIG_PACKAGE_logd=y
-
-        ########################################
-        # LuCI（Web界面 + 中文）
-        ########################################
-        CONFIG_PACKAGE_luci=y
-        CONFIG_PACKAGE_luci-base=y
-        CONFIG_PACKAGE_luci-mod-admin-full=y
-        CONFIG_PACKAGE_luci-theme-bootstrap=y
-        CONFIG_PACKAGE_luci-app-opkg=y
-        CONFIG_PACKAGE_luci-ssl=y
-        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-        CONFIG_PACKAGE_uhttpd=y
-        CONFIG_PACKAGE_uhttpd-mod-ubus=y
-        CONFIG_PACKAGE_libustream-mbedtls=y
-        CONFIG_PACKAGE_rpcd=y
-        CONFIG_PACKAGE_rpcd-mod-rrdns=y
-        CONFIG_PACKAGE_libiwinfo=y
-        CONFIG_PACKAGE_libiwinfo-data=y
-        CONFIG_PACKAGE_libiwinfo-lua=y
-        CONFIG_PACKAGE_lua=y
-
-        ########################################
-        # 网络性能优化
-        ########################################
-        CONFIG_PACKAGE_ip-full=y
-        CONFIG_PACKAGE_ipset=y
-        CONFIG_PACKAGE_iptables-mod-tproxy=y
-        CONFIG_PACKAGE_resolveip=y
-        CONFIG_PACKAGE_kmod-sched-cake=y
-        CONFIG_PACKAGE_tc=y
-        CONFIG_TCP_CONG_BBR=y
-        CONFIG_DEFAULT_TCP_CONG="bbr"
-
-        ########################################
-        # WiFi（MT7981）
-        ########################################
-        CONFIG_PACKAGE_kmod-mt76=y
-        CONFIG_PACKAGE_kmod-mt76-core=y
-        CONFIG_PACKAGE_kmod-mt76-connac=y
-        CONFIG_PACKAGE_kmod-mt7981-firmware=y
-        CONFIG_PACKAGE_wpad-basic-mbedtls=y
-        CONFIG_PACKAGE_iwinfo=y
-        CONFIG_PACKAGE_wireless-regdb=y
-        CONFIG_CFG80211_INTERNAL_REGDB=n
-
-        ########################################
-        # EMMC / 文件系统
-        ########################################
-        CONFIG_PACKAGE_block-mount=y
-        CONFIG_PACKAGE_blockd=y
-        CONFIG_PACKAGE_kmod-fs-ext4=y
-        CONFIG_PACKAGE_kmod-fs-f2fs=y
-        CONFIG_PACKAGE_kmod-mmc=y
-        CONFIG_PACKAGE_kmod-mmc-mtk=y
-        CONFIG_PACKAGE_e2fsprogs=y
-        CONFIG_PACKAGE_mkf2fs=y
-        CONFIG_PACKAGE_f2fsck=y
-        CONFIG_PACKAGE_mount-utils=y
-        CONFIG_PACKAGE_kmod-nls-base=y
-
-        ########################################
-        # 交换机 / MT7531
-        ########################################
-        CONFIG_PACKAGE_kmod-mediatek_eth=y
-        CONFIG_PACKAGE_kmod-mediatek_hnat=y
-        CONFIG_PACKAGE_kmod-mt7531=y
-        CONFIG_PACKAGE_bridge=y
-        CONFIG_PACKAGE_kmod-bridge=y
-
-        ########################################
-        # IRQ / CPU 性能优化
-        ########################################
-        CONFIG_CPUFREQ=y
-        CONFIG_CPUFREQ_DEFAULT_GOV_SCHEDUTIL=y
-        CONFIG_NR_CPUS=2
-        CONFIG_SCHED_MC=y
-        CONFIG_SCHED_SMT=y
-        CONFIG_RPS=y
-        CONFIG_XPS=y
-        CONFIG_SMP=y
-
-        ########################################
-        # LED / 按键
-        ########################################
-        CONFIG_PACKAGE_kmod-leds-gpio=y
-        CONFIG_PACKAGE_kmod-gpio-button-hotplug=y
-
-        ########################################
-        # 常用工具
-        ########################################
-        CONFIG_PACKAGE_coreutils=y
-        CONFIG_PACKAGE_coreutils-base64=y
-        CONFIG_PACKAGE_htop=y
-        CONFIG_PACKAGE_curl=y
-        CONFIG_PACKAGE_wget-ssl=y
-        CONFIG_PACKAGE_tar=y
-        CONFIG_PACKAGE_unzip=y
-
-        ########################################
-        # 调试工具
-        ########################################
-        CONFIG_PACKAGE_strace=y
-        CONFIG_PACKAGE_tcpdump-mini=y
-
-        ########################################
-        # 移除无用包（避免依赖错误）
-        ########################################
-        CONFIG_PACKAGE_audit=n
-        CONFIG_PACKAGE_policycoreutils=n
-        CONFIG_PACKAGE_pcat-manager=n
-        CONFIG_PACKAGE_kexec-tools=n
-        CONFIG_PACKAGE_default-settings=n
-        CONFIG_PACKAGE_default-settings-chn=n
-        CONFIG_PACKAGE_wsdd2=n
-        CONFIG_PACKAGE_lm-sensors=n
-        CONFIG_PACKAGE_luci-app-samba4=n
-        CONFIG_BUSYBOX_DEFAULT_PAM=n
-        CONFIG_BUSYBOX_DEFAULT_RPC=n
-
-        ########################################
-        # 内核优化（不再手动开 WiFi 内核项，交给 kmod 依赖）
-        ########################################
-        CONFIG_MODULES=y
-        CONFIG_KALLSYMS=y
-        CONFIG_KEXEC=n
-        CONFIG_KEXEC_FILE=n
-        CONFIG_CRASHDUMP=n
-        CONFIG_CRASH_HOTPLUG=n
-        CONFIG_SQUASHFS=y
-        CONFIG_EXT4_FS=n
-        CONFIG_F2FS_FS=n
-
-        ########################################
-        # 内存性能优化
-        ########################################
-        CONFIG_SLUB=y
-        CONFIG_SLUB_DEBUG=n
-        CONFIG_TRANSPARENT_HUGEPAGE=n
-        CONFIG_ZSWAP=n
-        CONFIG_ZRAM=n
-        EOF
-
+CONFIG_TARGET_mediatek=y
+CONFIG_TARGET_mediatek_filogic=y
+CONFIG_TARGET_mediatek_filogic_DEVICE_sl3000-emmc=y
+CONFIG_TARGET_ROOTFS_SQUASHFS=y
+EOF
         make defconfig
 
-    # -------------------------------
-    # 三件套存在性检查：.config + DTS + mk
-    # 不再用 sed 强改 mk，直接确认仓库里的三件套就位
-    # -------------------------------
-    - name: "Check aligned three-piece"
+    # 8. 检查三件套：.config + DTS + mk
+    - name: Verify aligned three-piece
       run: |
         cd $WORKDIR
 
-        echo "== Check config target =="
-        grep -E 'CONFIG_TARGET_mediatek_filogic_DEVICE_sl3000-emmc=y' .config || {
-          echo "FATAL: .config target not aligned"; exit 1;
-        }
+        echo "Checking .config target..."
+        grep -q "CONFIG_TARGET_mediatek_filogic_DEVICE_sl3000-emmc=y" .config \
+          && echo ".config OK" || { echo "Device not enabled in .config"; exit 1; }
 
-        echo "== Check DTS file (files-6.12) =="
-        DTS_FILE="target/linux/mediatek/files-6.12/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts"
-        [ -f "$DTS_FILE" ] || { echo "FATAL: DTS not found: $DTS_FILE"; exit 1; }
-        echo "Using DTS: $DTS_FILE"
+        echo "Checking DTS..."
+        DTS="target/linux/mediatek/files-6.12/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts"
+        test -f "$DTS" && echo "DTS OK: $DTS" || { echo "DTS missing: $DTS"; exit 1; }
 
-        echo "== Check filogic.mk device =="
-        grep -q 'define Device/sl3000-emmc' target/linux/mediatek/image/filogic.mk || {
-          echo "FATAL: Device/sl3000-emmc not found in filogic.mk"; exit 1;
-        }
-        grep -q 'TARGET_DEVICES \+= sl3000-emmc' target/linux/mediatek/image/filogic.mk || {
-          echo "FATAL: TARGET_DEVICES += sl3000-emmc missing"; exit 1;
-        }
+        echo "Checking filogic.mk..."
+        grep -q "Device/sl3000-emmc" target/linux/mediatek/image/filogic.mk \
+          && grep -q "TARGET_DEVICES \+= sl3000-emmc" target/linux/mediatek/image/filogic.mk \
+          && echo "filogic.mk OK" || { echo "filogic.mk missing sl3000-emmc"; exit 1; }
 
-    # -------------------------------
-    # feeds & 构建
-    # -------------------------------
-    - name: "Update & install feeds"
+    # 9. feeds
+    - name: Update and install feeds
       run: |
         cd $WORKDIR
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: "Build firmware"
+    # 10. 构建 tools
+    - name: Build tools
+      run: |
+        cd $WORKDIR
+        make tools/install -j1 V=s
+
+    # 11. 构建 toolchain
+    - name: Build toolchain
+      run: |
+        cd $WORKDIR
+        make toolchain/install -j1 V=s
+
+    # 12. 构建固件（包含 sysupgrade/initramfs/factory 等）
+    - name: Build firmware
       run: |
         cd $WORKDIR
         make -j$(nproc) V=s
 
-    # -------------------------------
-    # 上传固件
-    # -------------------------------
-    - name: "Upload firmware"
+    # 13. 检查输出里是否有 sl3000-emmc 的固件
+    - name: Check output images
+      run: |
+        cd $WORKDIR/bin/targets/mediatek/filogic/
+        ls -lh
+
+        # sysupgrade
+        SYSUP=$(ls *sl3000-emmc*sysupgrade*.bin 2>/dev/null || true)
+        # factory / recovery / initramfs（视你的 image 定义而定，尽可能多匹配）
+        FACT=$(ls *sl3000-emmc*factory* 2>/dev/null || true)
+        INITR=$(ls *sl3000-emmc*initramfs* 2>/dev/null || true)
+        RECV=$(ls *sl3000-emmc*recovery* 2>/dev/null || true)
+
+        echo "SYSUP: $SYSUP"
+        echo "FACT:  $FACT"
+        echo "INITR: $INITR"
+        echo "RECV:  $RECV"
+
+        if [ -z "$SYSUP" ] && [ -z "$FACT" ] && [ -z "$INITR" ] && [ -z "$RECV" ]; then
+          echo "No SL3000-EMMC images generated"
+          exit 1
+        fi
+
+    # 14. 上传所有 sl3000-emmc 相关固件
+    - name: Upload firmware artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: sl3000-firmware-25.12
+        name: SL3000-EMMC-images
         path: |
-          ${{ env.WORKDIR }}/bin/targets/
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*factory*
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*initramfs*
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*recovery*
+
+    # 15. 自动发布 Release（tag + 所有固件文件）
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: sl3000-emmc-$(date +'%Y%m%d-%H%M')
+        name: SL3000-EMMC Firmware $(date +'%Y-%m-%d %H:%M')
+        body: |
+          自动构建 SL3000-EMMC 固件：
+          - 三件套对齐：.config + DTS + filogic.mk
+          - 自动构建 tools / toolchain / firmware
+          - 自动检查输出 image（sysupgrade/factory/initramfs/recovery）
+          - 自动上传 artifacts + 发布 Release
+        files: |
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*factory*
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*initramfs*
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*recovery*
