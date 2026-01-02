@@ -9,7 +9,7 @@ permissions:
 jobs:
   full-build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180   # 延长超时，避免大构建被杀掉
+    timeout-minutes: 240   # 延长超时，避免大构建被杀掉
 
     steps:
     - name: Checkout
@@ -19,6 +19,12 @@ jobs:
 
     - name: Prepare /mnt workspace
       run: |
+        # 清理磁盘空间，释放 10GB+
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo docker system prune -af || true
+        df -h /
+
+        # 创建工作目录
         sudo mkdir -p /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging /mnt/host
         sudo chown $USER:$USER /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging /mnt/host
         rsync -a . /mnt/openwrt/
@@ -71,6 +77,21 @@ jobs:
         cd "$WORKDIR"
         ./scripts/feeds update -a || (sleep 3 && ./scripts/feeds update -a)
         ./scripts/feeds install -a || (sleep 3 && ./scripts/feeds install -a)
+
+    - name: Force SL3000 profile
+      run: |
+        cd "$WORKDIR"
+        rm -f .config
+        cat >> .config <<'EOF'
+        CONFIG_TARGET_mediatek=y
+        CONFIG_TARGET_mediatek_filogic=y
+        CONFIG_TARGET_mediatek_filogic_DEVICE_sl3000-emmc=y
+        CONFIG_TARGET_ROOTFS_SQUASHFS=y
+        # 禁用多 profile
+        # CONFIG_TARGET_MULTI_PROFILE is not set
+        EOF
+        make defconfig
+        yes "" | make oldconfig
 
     - name: Verify 三件套
       run: |
