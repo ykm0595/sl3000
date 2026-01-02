@@ -19,13 +19,14 @@ jobs:
 
     - name: Prepare /mnt workspace
       run: |
-        sudo mkdir -p /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging
-        sudo chown $USER:$USER /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging
+        sudo mkdir -p /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging /mnt/host
+        sudo chown $USER:$USER /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging /mnt/host
         rsync -a . /mnt/openwrt/
         echo "WORKDIR=/mnt/openwrt" >> $GITHUB_ENV
         echo "CCACHE_DIR=/mnt/ccache" >> $GITHUB_ENV
         echo "DL_DIR=/mnt/dl" >> $GITHUB_ENV
         echo "STAGING_DIR=/mnt/staging" >> $GITHUB_ENV
+        echo "HOST_DIR=/mnt/host" >> $GITHUB_ENV
         echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
         df -h / /mnt
 
@@ -93,6 +94,11 @@ jobs:
         cd "$WORKDIR"
         ./scripts/diffconfig.sh | tee /mnt/openwrt/diffconfig.log
         grep "sl3000-emmc" /mnt/openwrt/diffconfig.log || { echo "最终配置未启用 sl3000-emmc"; exit 1; }
+
+    - name: Build images explicitly
+      run: |
+        cd "$WORKDIR"
+        make -j1 V=s images || { echo "镜像生成失败"; exit 1; }
 
     - name: Check output
       run: |
