@@ -9,7 +9,7 @@ permissions:
 jobs:
   full-build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180   # 延长超时，避免大构建被杀掉
 
     steps:
     - name: Checkout
@@ -17,16 +17,17 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Prepare workspace
+    - name: Prepare /mnt workspace
       run: |
-        sudo mkdir -p /mnt/openwrt /mnt/ccache /mnt/dl
-        sudo chown $USER:$USER /mnt/openwrt /mnt/ccache /mnt/dl
+        sudo mkdir -p /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging
+        sudo chown $USER:$USER /mnt/openwrt /mnt/ccache /mnt/dl /mnt/staging
         rsync -a . /mnt/openwrt/
         echo "WORKDIR=/mnt/openwrt" >> $GITHUB_ENV
         echo "CCACHE_DIR=/mnt/ccache" >> $GITHUB_ENV
         echo "DL_DIR=/mnt/dl" >> $GITHUB_ENV
+        echo "STAGING_DIR=/mnt/staging" >> $GITHUB_ENV
         echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
-        df -h / /mnt || true
+        df -h / /mnt
 
     - name: Cache ccache
       uses: actions/cache@v3
@@ -49,7 +50,7 @@ jobs:
     - name: Cache toolchain
       uses: actions/cache@v3
       with:
-        path: /mnt/openwrt/staging_dir/toolchain-*
+        path: /mnt/staging/toolchain-*
         key: ${{ runner.os }}-toolchain-${{ github.ref }}-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-toolchain-${{ github.ref }}
@@ -70,51 +71,7 @@ jobs:
         ./scripts/feeds update -a || (sleep 3 && ./scripts/feeds update -a)
         ./scripts/feeds install -a || (sleep 3 && ./scripts/feeds install -a)
 
-    - name: Auto-fix 三件套
-      run: |
-        cd "$WORKDIR"
-        rm -f .config
-        cat >> .config <<'EOF'
-        CONFIG_TARGET_mediatek=y
-        CONFIG_TARGET_mediatek_filogic=y
-        CONFIG_TARGET_mediatek_filogic_DEVICE_sl3000-emmc=y
-        CONFIG_TARGET_ROOTFS_SQUASHFS=y
-        EOF
-        make defconfig
-        yes "" | make oldconfig
-
-        PATCHVER=$(grep -E '^KERNEL_PATCHVER' target/linux/mediatek/Makefile | cut -d= -f2 | tr -d ' ')
-        [ -n "$PATCHVER" ] || PATCHVER="6.6"
-        DTS="target/linux/mediatek/files-$PATCHVER/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts"
-        [ -f "$DTS" ] || { echo "错误: DTS 文件不存在 $DTS"; exit 1; }
-
-        MK=target/linux/mediatek/image/filogic.mk
-        cat > $MK <<'EOF'
-        include $(TOPDIR)/rules.mk
-        include $(INCLUDE_DIR)/image.mk
-        DEFAULT_PACKAGES += uboot-envtools
-        define Device/sl3000-emmc
-          DEVICE_VENDOR := SL
-          DEVICE_MODEL := SL3000
-          DEVICE_VARIANT := EMMC
-          DEVICE_DTS := mt7981b-sl3000-emmc
-          DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
-          DEVICE_PACKAGES := kmod-usb3 kmod-usb2 kmod-usb-ohci kmod-usb-uhci \
-            kmod-mt7981-firmware kmod-mt76-core kmod-mt76-connac \
-            kmod-mediatek_eth kmod-mediatek_hnat kmod-mt7531 \
-            kmod-mmc kmod-mmc-mtk \
-            block-mount e2fsprogs mkf2fs f2fsck \
-            wireless-regdb wpad-basic-mbedtls
-          SUPPORTED_DEVICES := sl3000 sl3000-emmc
-          IMAGE_SIZE := 256m
-          IMAGES += sysupgrade.bin
-          IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | check-size
-          $(call Device/FitImage)
-        endef
-        TARGET_DEVICES += sl3000-emmc
-        EOF
-
-    - name: Verify 三件套 before build
+    - name: Verify 三件套
       run: |
         cd "$WORKDIR"
         grep "sl3000-emmc" .config || { echo ".config 缺少 sl3000-emmc"; exit 1; }
@@ -125,16 +82,17 @@ jobs:
       run: |
         cd "$WORKDIR"
         make download -j2 || make download -j1
-        make tools/install -j1 V=s | tee build_tools.log
-        make toolchain/install -j1 V=s | tee build_toolchain.log
+        make tools/install -j1 V=s | tee /mnt/openwrt/build_tools.log
+        make toolchain/install -j1 V=s | tee /mnt/openwrt/build_toolchain.log
         rm -rf bin tmp build_dir/target-*/root-*/.*tmp || true
-        make -j$(nproc) V=s | tee build_world.log || make -j1 V=s | tee build_world.log
+        make -j$(($(nproc)-1)) V=s | tee /mnt/openwrt/build_world.log || make -j1 V=s | tee /mnt/openwrt/build_world.log
+        ccache -s || true
 
     - name: Dump diffconfig
       run: |
         cd "$WORKDIR"
-        ./scripts/diffconfig.sh | tee diffconfig.log
-        grep "sl3000-emmc" diffconfig.log || { echo "最终配置未启用 sl3000-emmc"; exit 1; }
+        ./scripts/diffconfig.sh | tee /mnt/openwrt/diffconfig.log
+        grep "sl3000-emmc" /mnt/openwrt/diffconfig.log || { echo "最终配置未启用 sl3000-emmc"; exit 1; }
 
     - name: Check output
       run: |
@@ -161,20 +119,14 @@ jobs:
           ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/sha256sums.txt
         retention-days: 30
 
-    - name: Upload diffconfig
-      uses: actions/upload-artifact@v4
-      with:
-        name: diffconfig-log
-        path: ${{ env.WORKDIR }}/diffconfig.log
-        retention-days: 14
-
     - name: Upload logs
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: build-logs
         path: |
-          ${{ env.WORKDIR }}/build_tools.log
-          ${{ env.WORKDIR }}/build_toolchain.log
-          ${{ env.WORKDIR }}/build_world.log
+          /mnt/openwrt/build_tools.log
+          /mnt/openwrt/build_toolchain.log
+          /mnt/openwrt/build_world.log
+          /mnt/openwrt/diffconfig.log
         retention-days: 30
