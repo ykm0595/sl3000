@@ -1,48 +1,49 @@
 name: Build SL3000 Firmware
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
-concurrency:
-  group: build-sl3000-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-    - name: Clean system (optimize disk)
+    - name: Prepare workspace
       run: |
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo docker system prune -af || true
-        sudo apt-get clean
-        df -h /
-
-    - name: Move workspace to /mnt
-      run: |
-        sudo mkdir -p /mnt/openwrt /mnt/ccache
-        sudo chown $USER:$USER /mnt/openwrt /mnt/ccache
+        sudo mkdir -p /mnt/openwrt /mnt/ccache /mnt/dl
+        sudo chown $USER:$USER /mnt/openwrt /mnt/ccache /mnt/dl
         rsync -a . /mnt/openwrt/
         echo "WORKDIR=/mnt/openwrt" >> $GITHUB_ENV
         echo "CCACHE_DIR=/mnt/ccache" >> $GITHUB_ENV
-        echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
-        echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
+        echo "DL_DIR=/mnt/dl" >> $GITHUB_ENV
+        echo "PATH=/usr/lib/ccache:/usr/bin:/bin:/usr/sbin:/sbin" >> $GITHUB_ENV
+        df -h / /mnt || true
 
     - name: Cache ccache
       uses: actions/cache@v3
       with:
         path: /mnt/ccache
-        key: ${{ runner.os }}-ccache-${{ github.ref }}-${{ hashFiles('feeds.conf.default', 'feeds.conf') }}
+        key: ${{ runner.os }}-ccache-${{ github.ref }}-${{ hashFiles('.config') }}
         restore-keys: |
           ${{ runner.os }}-ccache-${{ github.ref }}-
           ${{ runner.os }}-ccache-
+
+    - name: Cache dl sources
+      uses: actions/cache@v3
+      with:
+        path: /mnt/dl
+        key: ${{ runner.os }}-dl-${{ github.ref }}-${{ hashFiles('feeds.conf', 'feeds.conf.default') }}
+        restore-keys: |
+          ${{ runner.os }}-dl-${{ github.ref }}-
+          ${{ runner.os }}-dl-
 
     - name: Install dependencies
       run: |
@@ -53,60 +54,68 @@ jobs:
           libncursesw5-dev parted e2fsprogs m4 autoconf automake libgmp-dev libmpfr-dev \
           libmpc-dev gperf texinfo zstd jq
 
-    - name: Use root .config
+    - name: Update feeds
       run: |
         cd "$WORKDIR"
-        [ -s .config ] || { echo "Error: .config not found in $WORKDIR after rsync"; ls -la; exit 1; }
-        if grep -q "^CONFIG_PACKAGE_default-settings=y" .config 2>/dev/null; then
-          sed -i 's/^CONFIG_PACKAGE_default-settings=y/CONFIG_PACKAGE_default-settings=n/' .config
-        fi
-        make defconfig
-        echo "---- Effective config (head) ----"
-        sed -n '1,120p' .config
-
-    - name: Verify device profile (三件套检测)
-      run: |
-        cd "$WORKDIR"
-        grep -q "sl3000-emmc" .config || { echo "Device not enabled in .config"; exit 1; }
-        found=0
-        for v in files-6.12 files-6.6 files-6.1; do
-          p="target/linux/mediatek/$v/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts"
-          if [ -f "$p" ]; then echo "DTS OK: $p"; found=1; break; fi
-        done
-        [ "$found" = "1" ] || { echo "DTS missing across known paths"; exit 1; }
-        grep -q "Device/sl3000-emmc" target/linux/mediatek/image/filogic.mk || { echo "filogic.mk missing entry"; exit 1; }
-
-    - name: Update feeds (auto repair)
-      run: |
-        cd "$WORKDIR"
-        rm -rf bin tmp || true
         ./scripts/feeds update -a || (sleep 3 && ./scripts/feeds update -a)
         ./scripts/feeds install -a || (sleep 3 && ./scripts/feeds install -a)
 
-    - name: Build tools
-      run: cd "$WORKDIR" && make tools/install -j1 V=s
+    - name: Remove default-settings (safety)
+      run: |
+        cd "$WORKDIR"
+        rm -rf package/*default-settings* feeds/*/*default-settings* || true
+        sed -i -E 's/(^|\s)default-settings(\s|$)//g' target/linux/mediatek/image/filogic.mk || true
 
-    - name: Build toolchain
-      run: cd "$WORKDIR" && make toolchain/install -j1 V=s
+    - name: Verify triad (.config, DTS, filogic.mk)
+      run: |
+        cd "$WORKDIR"
+        # 检查 .config 是否启用了 sl3000-emmc
+        grep -q "sl3000-emmc" .config || { echo "错误: .config 中缺少 sl3000-emmc"; exit 1; }
+
+        # DTS 检测
+        PATCHVER=$(grep -E '^KERNEL_PATCHVER' target/linux/mediatek/Makefile | cut -d= -f2 | tr -d ' ')
+        FOUND_DTS=0
+        for v in "files-$PATCHVER" files-6.12 files-6.6 files-6.1; do
+          DTS="target/linux/mediatek/$v/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts"
+          if [ -f "$DTS" ]; then
+            echo "DTS OK: $DTS"
+            FOUND_DTS=1
+            break
+          fi
+        done
+        [ "$FOUND_DTS" = "1" ] || { echo "错误: DTS 文件不存在"; exit 1; }
+
+        # filogic.mk 检查
+        MK="target/linux/mediatek/image/filogic.mk"
+        [ -f "$MK" ] || { echo "错误: 缺少 $MK"; exit 1; }
+        grep -q "Device/sl3000-emmc" "$MK" || { echo "错误: filogic.mk 中缺少 sl3000-emmc"; exit 1; }
+
+        echo "三件套检查通过"
 
     - name: Build firmware
-      run: cd "$WORKDIR" && make -j$(($(nproc)-1)) V=s
+      run: |
+        cd "$WORKDIR"
+        make download -j"$(nproc)" || make download -j1
+        make tools/install -j1 V=s | tee build_tools.log
+        make toolchain/install -j1 V=s | tee build_toolchain.log
+        rm -rf bin tmp build_dir/target-*/root-*/.*tmp || true
+        make -j"$(($(nproc)-1))" V=s | tee build_world.log || make -j1 V=s | tee build_world.log
+        ccache -s || true
 
-    - name: Check output (三件套检测)
+    - name: Check output
       run: |
         TARGET_DIR="$WORKDIR/bin/targets/mediatek/filogic"
-        if [ ! -d "$TARGET_DIR" ]; then
-          echo "Target output dir not found"
-          exit 1
-        fi
+        [ -d "$TARGET_DIR" ] || { echo "Target output dir not found"; exit 1; }
         cd "$TARGET_DIR"
         ls -lh
         FW=$(ls *sl3000-emmc*sysupgrade*.bin 2>/dev/null || true)
         if [ -n "$FW" ]; then
-          echo "Found firmware: $FW"
-          sha256sum $FW
+          SIZE=$(stat -c%s "$FW")
+          [ "$SIZE" -gt 4000000 ] || { echo "固件过小 ($SIZE bytes)"; exit 1; }
+          echo "找到固件: $FW ($SIZE bytes)"
+          sha256sum $FW | tee "$WORKDIR/bin/targets/mediatek/filogic/sha256sums.txt"
         else
-          echo "No SL3000 firmware generated"
+          echo "未生成 SL3000 固件"
           exit 1
         fi
 
@@ -114,29 +123,40 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: SL3000-firmware
-        path: ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
-        retention-days: 14
-
-    - name: Set build metadata
-      run: echo "BUILD_DATE=$(date +%Y%m%d-%H%M)" >> $GITHUB_ENV
+        path: |
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/sha256sums.txt
+        retention-days: 30
 
     - name: Release firmware
       uses: softprops/action-gh-release@v1
-      if: success()
       with:
         name: SL3000 firmware release
-        tag_name: sl3000-${{ env.BUILD_DATE }}
-        body: |
-          Auto-generated release for SL3000 (run ${{ github.run_id }})
-          - Branch: ${{ github.ref }}
-          - Commit: ${{ github.sha }}
-        files: ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
+        tag_name: sl3000-${{ github.run_id }}
+        body: 自动生成的 SL3000 固件发布
+        files: |
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/sha256sums.txt
 
-    - name: Failure summary (log highlight)
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          ${{ env.WORKDIR }}/build_tools.log
+          ${{ env.WORKDIR }}/build_toolchain.log
+          ${{ env.WORKDIR }}/build_world.log
+        retention-days: 30
+
+    - name: Upload context on failure
       if: failure()
-      run: |
-        echo "---- Build failed. Tail highlights ----"
-        find "$WORKDIR" -maxdepth 2 -name "build.log" -print -exec tail -n 200 {} \; || true
-        find "$WORKDIR/dl" -maxdepth 2 -name "*.log" -print -exec tail -n 200 {} \; || true
-        find "$WORKDIR/build_dir" -path "*mt76*" -name "*.log" -print -exec tail -n 200 {} \; || true
-        find "$WORKDIR" -name "*.rej" -print -exec sed -n '1,200p' {} \; || true
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-context
+        path: |
+          ${{ env.WORKDIR }}/.config
+          ${{ env.WORKDIR }}/target/linux/mediatek/image/filogic.mk
+          ${{ env.WORKDIR }}/target/linux/mediatek/files-*/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts
+          ${{ env.WORKDIR }}/scripts/diffconfig.sh
+        retention-days: 14
