@@ -26,6 +26,7 @@ jobs:
         echo "CCACHE_DIR=/mnt/ccache" >> $GITHUB_ENV
         echo "DL_DIR=/mnt/dl" >> $GITHUB_ENV
         echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
+        df -h / /mnt || true
 
     - name: Cache ccache
       uses: actions/cache@v3
@@ -113,6 +114,13 @@ jobs:
         TARGET_DEVICES += sl3000-emmc
         EOF
 
+    - name: Verify 三件套 before build
+      run: |
+        cd "$WORKDIR"
+        grep "sl3000-emmc" .config || { echo ".config 缺少 sl3000-emmc"; exit 1; }
+        grep "sl3000-emmc" target/linux/mediatek/image/filogic.mk || { echo "filogic.mk 缺少 sl3000-emmc"; exit 1; }
+        ls target/linux/mediatek/files-*/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts || { echo "DTS 缺失"; exit 1; }
+
     - name: Build firmware
       run: |
         cd "$WORKDIR"
@@ -121,6 +129,12 @@ jobs:
         make toolchain/install -j1 V=s | tee build_toolchain.log
         rm -rf bin tmp build_dir/target-*/root-*/.*tmp || true
         make -j$(nproc) V=s | tee build_world.log || make -j1 V=s | tee build_world.log
+
+    - name: Dump diffconfig
+      run: |
+        cd "$WORKDIR"
+        ./scripts/diffconfig.sh | tee diffconfig.log
+        grep "sl3000-emmc" diffconfig.log || { echo "最终配置未启用 sl3000-emmc"; exit 1; }
 
     - name: Check output
       run: |
@@ -137,3 +151,30 @@ jobs:
           echo "未生成 SL3000 固件"
           exit 1
         fi
+
+    - name: Upload firmware
+      uses: actions/upload-artifact@v4
+      with:
+        name: SL3000-firmware
+        path: |
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
+          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/sha256sums.txt
+        retention-days: 30
+
+    - name: Upload diffconfig
+      uses: actions/upload-artifact@v4
+      with:
+        name: diffconfig-log
+        path: ${{ env.WORKDIR }}/diffconfig.log
+        retention-days: 14
+
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          ${{ env.WORKDIR }}/build_tools.log
+          ${{ env.WORKDIR }}/build_toolchain.log
+          ${{ env.WORKDIR }}/build_world.log
+        retention-days: 30
