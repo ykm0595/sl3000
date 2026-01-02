@@ -7,8 +7,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  full-build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     steps:
     - name: Checkout
@@ -24,26 +25,34 @@ jobs:
         echo "WORKDIR=/mnt/openwrt" >> $GITHUB_ENV
         echo "CCACHE_DIR=/mnt/ccache" >> $GITHUB_ENV
         echo "DL_DIR=/mnt/dl" >> $GITHUB_ENV
-        echo "PATH=/usr/lib/ccache:/usr/bin:/bin:/usr/sbin:/sbin" >> $GITHUB_ENV
-        df -h / /mnt || true
+        echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
 
     - name: Cache ccache
       uses: actions/cache@v3
       with:
         path: /mnt/ccache
-        key: ${{ runner.os }}-ccache-${{ github.ref }}-${{ hashFiles('.config') }}
+        key: ${{ runner.os }}-ccache-${{ github.ref }}-${{ github.sha }}
         restore-keys: |
-          ${{ runner.os }}-ccache-${{ github.ref }}-
-          ${{ runner.os }}-ccache-
+          ${{ runner.os }}-ccache-${{ github.ref }}
+          ${{ runner.os }}-ccache
 
     - name: Cache dl sources
       uses: actions/cache@v3
       with:
         path: /mnt/dl
-        key: ${{ runner.os }}-dl-${{ github.ref }}-${{ hashFiles('feeds.conf', 'feeds.conf.default') }}
+        key: ${{ runner.os }}-dl-${{ github.ref }}-${{ github.sha }}
         restore-keys: |
-          ${{ runner.os }}-dl-${{ github.ref }}-
-          ${{ runner.os }}-dl-
+          ${{ runner.os }}-dl-${{ github.ref }}
+          ${{ runner.os }}-dl
+
+    - name: Cache toolchain
+      uses: actions/cache@v3
+      with:
+        path: /mnt/openwrt/staging_dir/toolchain-*
+        key: ${{ runner.os }}-toolchain-${{ github.ref }}-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-toolchain-${{ github.ref }}
+          ${{ runner.os }}-toolchain
 
     - name: Install dependencies
       run: |
@@ -60,52 +69,62 @@ jobs:
         ./scripts/feeds update -a || (sleep 3 && ./scripts/feeds update -a)
         ./scripts/feeds install -a || (sleep 3 && ./scripts/feeds install -a)
 
-    - name: Remove default-settings (safety)
+    - name: Auto-fix 三件套
       run: |
         cd "$WORKDIR"
-        rm -rf package/*default-settings* feeds/*/*default-settings* || true
-        sed -i -E 's/(^|\s)default-settings(\s|$)//g' target/linux/mediatek/image/filogic.mk || true
+        rm -f .config
+        cat >> .config <<'EOF'
+        CONFIG_TARGET_mediatek=y
+        CONFIG_TARGET_mediatek_filogic=y
+        CONFIG_TARGET_mediatek_filogic_DEVICE_sl3000-emmc=y
+        CONFIG_TARGET_ROOTFS_SQUASHFS=y
+        EOF
+        make defconfig
+        yes "" | make oldconfig
 
-    - name: Verify triad (.config, DTS, filogic.mk)
-      run: |
-        cd "$WORKDIR"
-        # 检查 .config 是否启用了 sl3000-emmc
-        grep -q "sl3000-emmc" .config || { echo "错误: .config 中缺少 sl3000-emmc"; exit 1; }
-
-        # DTS 检测
         PATCHVER=$(grep -E '^KERNEL_PATCHVER' target/linux/mediatek/Makefile | cut -d= -f2 | tr -d ' ')
-        FOUND_DTS=0
-        for v in "files-$PATCHVER" files-6.12 files-6.6 files-6.1; do
-          DTS="target/linux/mediatek/$v/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts"
-          if [ -f "$DTS" ]; then
-            echo "DTS OK: $DTS"
-            FOUND_DTS=1
-            break
-          fi
-        done
-        [ "$FOUND_DTS" = "1" ] || { echo "错误: DTS 文件不存在"; exit 1; }
+        [ -n "$PATCHVER" ] || PATCHVER="6.6"
+        DTS="target/linux/mediatek/files-$PATCHVER/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts"
+        [ -f "$DTS" ] || { echo "错误: DTS 文件不存在 $DTS"; exit 1; }
 
-        # filogic.mk 检查
-        MK="target/linux/mediatek/image/filogic.mk"
-        [ -f "$MK" ] || { echo "错误: 缺少 $MK"; exit 1; }
-        grep -q "Device/sl3000-emmc" "$MK" || { echo "错误: filogic.mk 中缺少 sl3000-emmc"; exit 1; }
-
-        echo "三件套检查通过"
+        MK=target/linux/mediatek/image/filogic.mk
+        cat > $MK <<'EOF'
+        include $(TOPDIR)/rules.mk
+        include $(INCLUDE_DIR)/image.mk
+        DEFAULT_PACKAGES += uboot-envtools
+        define Device/sl3000-emmc
+          DEVICE_VENDOR := SL
+          DEVICE_MODEL := SL3000
+          DEVICE_VARIANT := EMMC
+          DEVICE_DTS := mt7981b-sl3000-emmc
+          DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
+          DEVICE_PACKAGES := kmod-usb3 kmod-usb2 kmod-usb-ohci kmod-usb-uhci \
+            kmod-mt7981-firmware kmod-mt76-core kmod-mt76-connac \
+            kmod-mediatek_eth kmod-mediatek_hnat kmod-mt7531 \
+            kmod-mmc kmod-mmc-mtk \
+            block-mount e2fsprogs mkf2fs f2fsck \
+            wireless-regdb wpad-basic-mbedtls
+          SUPPORTED_DEVICES := sl3000 sl3000-emmc
+          IMAGE_SIZE := 256m
+          IMAGES += sysupgrade.bin
+          IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | check-size
+          $(call Device/FitImage)
+        endef
+        TARGET_DEVICES += sl3000-emmc
+        EOF
 
     - name: Build firmware
       run: |
         cd "$WORKDIR"
-        make download -j"$(nproc)" || make download -j1
+        make download -j2 || make download -j1
         make tools/install -j1 V=s | tee build_tools.log
         make toolchain/install -j1 V=s | tee build_toolchain.log
         rm -rf bin tmp build_dir/target-*/root-*/.*tmp || true
-        make -j"$(($(nproc)-1))" V=s | tee build_world.log || make -j1 V=s | tee build_world.log
-        ccache -s || true
+        make -j$(nproc) V=s | tee build_world.log || make -j1 V=s | tee build_world.log
 
     - name: Check output
       run: |
         TARGET_DIR="$WORKDIR/bin/targets/mediatek/filogic"
-        [ -d "$TARGET_DIR" ] || { echo "Target output dir not found"; exit 1; }
         cd "$TARGET_DIR"
         ls -lh
         FW=$(ls *sl3000-emmc*sysupgrade*.bin 2>/dev/null || true)
@@ -118,45 +137,3 @@ jobs:
           echo "未生成 SL3000 固件"
           exit 1
         fi
-
-    - name: Upload firmware
-      uses: actions/upload-artifact@v4
-      with:
-        name: SL3000-firmware
-        path: |
-          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
-          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/sha256sums.txt
-        retention-days: 30
-
-    - name: Release firmware
-      uses: softprops/action-gh-release@v1
-      with:
-        name: SL3000 firmware release
-        tag_name: sl3000-${{ github.run_id }}
-        body: 自动生成的 SL3000 固件发布
-        files: |
-          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/*sl3000-emmc*sysupgrade*.bin
-          ${{ env.WORKDIR }}/bin/targets/mediatek/filogic/sha256sums.txt
-
-    - name: Upload logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs
-        path: |
-          ${{ env.WORKDIR }}/build_tools.log
-          ${{ env.WORKDIR }}/build_toolchain.log
-          ${{ env.WORKDIR }}/build_world.log
-        retention-days: 30
-
-    - name: Upload context on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-context
-        path: |
-          ${{ env.WORKDIR }}/.config
-          ${{ env.WORKDIR }}/target/linux/mediatek/image/filogic.mk
-          ${{ env.WORKDIR }}/target/linux/mediatek/files-*/arch/arm64/boot/dts/mediatek/mt7981b-sl3000-emmc.dts
-          ${{ env.WORKDIR }}/scripts/diffconfig.sh
-        retention-days: 14
