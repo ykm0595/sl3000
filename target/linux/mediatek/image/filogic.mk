@@ -15,5 +15,9 @@ define Device/sl3000-emmc
 	kmod-mediatek_eth \
 	kmod-mediatek_hnat \
 	kmod-mt7531
+  SUPPORTED_DEVICES := sl3000 sl3000-emmc
+  IMAGES += sysupgrade.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | check-size
+  $(call Device/FitImage)
 endef
 TARGET_DEVICES += sl3000-emmc
