@@ -16,7 +16,7 @@ define Device/sl3000-emmc
         block-mount e2fsprogs mkf2fs f2fsck \
         wireless-regdb wpad-basic-mbedtls
 
-  SUPPORTED_DEVICES := sl3000 sl3000-emmc
+  SUPPORTED_DEVICES := sl3000-emmc
   BLOCKSIZE := 128k
   PAGESIZE := 2k
   IMAGE_SIZE := 256m
