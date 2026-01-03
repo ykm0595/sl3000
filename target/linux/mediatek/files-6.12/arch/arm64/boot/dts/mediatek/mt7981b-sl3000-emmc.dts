@@ -2,8 +2,68 @@
 /dts-v1/;
 
 #include "mt7981b.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 
-/ {
+&uart0 { status = "okay"; };
+
+&mmc0 {
+    status = "okay";
+    bus-width = <8>;
+    non-removable;
+    no-sd;
+    no-sdio;
+    max-frequency = <52000000>;
+}
+
+&wifi { status = "okay"; };
+
+&eth {
+    status = "okay";
+
+    gmac0: mac@0 {
+        status = "okay";
+        phy-mode = "2500base-x";
+        fixed-link {
+            speed = <2500>;
+            full-duplex;
+        };
+    };
+
+    mdio: mdio-bus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        switch@0 {
+            compatible = "mediatek,mt7531";
+            reg = <0x1f>;
+            reset-gpios = <&pio 39 GPIO_ACTIVE_LOW>;
+
+            ports {
+                #address-cells = <1>;
+                #size-cells = <0>;
+
+                port@0 { reg = <0>; label = "lan1"; };
+                port@1 { reg = <1>; label = "lan2"; };
+                port@2 { reg = <2>; label = "lan3"; };
+                port@3 { reg = <3>; label = "wan"; };
+
+                port@6 {
+                    reg = <6>;
+                    label = "cpu";
+                    ethernet = <&gmac0>;
+                    phy-mode = "2500base-x";
+                    fixed-link {
+                        speed = <2500>;
+                        full-duplex;
+                    };
+                };
+            };
+        };
+    };
+};
+
+ / {
     model = "SL-3000 (EMMC)";
     compatible = "sl,sl3000-emmc", "mediatek,mt7981b";
 
@@ -12,28 +72,28 @@
     };
 
     aliases {
-        led-boot = &green_status;
-        led-failsafe = &red_power;
-        led-running = &green_status;
-        led-upgrade = &blue_wifi;
+        led-boot = &greenstatus;
+        led-failsafe = &redpower;
+        led-running = &greenstatus;
+        led-upgrade = &bluewifi;
     };
 
     leds {
         compatible = "gpio-leds";
 
-        red_power: led_power {
+        redpower: ledpower {
             label = "sl3000:red:power";
             gpios = <&pio 10 GPIO_ACTIVE_LOW>;
-            default-state = "on";
+            default-state = "off";
         };
 
-        green_status: led_status {
+        greenstatus: ledstatus {
             label = "sl3000:green:status";
             gpios = <&pio 11 GPIO_ACTIVE_LOW>;
             default-state = "off";
         };
 
-        blue_wifi: led_wifi {
+        bluewifi: ledwifi {
             label = "sl3000:blue:wifi";
             gpios = <&pio 12 GPIO_ACTIVE_LOW>;
             default-state = "off";
@@ -51,63 +111,8 @@
 
         mesh {
             label = "mesh";
-            linux,code = <KEY_MESH>;
+            linux,code = <KEY_WPS>;
             gpios = <&pio 0 GPIO_ACTIVE_LOW>;
         };
     };
 };
-
-&uart0 { status = "okay"; };
-
-&mmc0 {
-    status = "okay";
-    bus-width = <8>;
-    non-removable;
-    no-sd;
-    no-sdio;
-    max-frequency = <52000000>;
-};
-
-&eth {
-    status = "okay";
-
-    gmac0: mac@0 {
-        status = "okay";
-        phy-mode = "2500base-x";
-
-        fixed-link {
-            speed = <2500>;
-            full-duplex;
-        };
-    };
-
-    mdio: mdio-bus {
-        #address-cells = <1>;
-        #size-cells = <0>;
-
-        switch@0 {
-            compatible = "mediatek,mt7531";
-            reg = <0x1f>;
-            reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
-
-            ports {
-                #address-cells = <1>;
-                #size-cells = <0>;
-
-                port@0 { reg = <0>; label = "lan1"; };
-                port@1 { reg = <1>; label = "lan2"; };
-                port@2 { reg = <2>; label = "lan3"; };
-                port@3 { reg = <3>; label = "wan"; };
-                port@6 {
-                    reg = <6>;
-                    label = "cpu";
-                    ethernet = <&gmac0>;
-                    phy-mode = "2500base-x";
-                    fixed-link { speed = <2500>; full-duplex; };
-                };
-            };
-        };
-    };
-};
-
-&wifi { status = "okay"; };
