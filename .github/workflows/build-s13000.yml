@@ -112,11 +112,6 @@ jobs:
         ./scripts/diffconfig.sh | tee /mnt/openwrt/diffconfig.log
         grep "sl3000-emmc" /mnt/openwrt/diffconfig.log || { echo "最终配置未启用 sl3000-emmc"; exit 1; }
 
-    - name: Build images explicitly
-      run: |
-        cd "$WORKDIR"
-        make -j1 V=s images || { echo "镜像生成失败"; exit 1; }
-
     - name: Check output
       run: |
         TARGET_DIR="$WORKDIR/bin/targets/mediatek/filogic"
