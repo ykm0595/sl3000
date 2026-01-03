@@ -9,7 +9,6 @@ permissions:
 jobs:
   full-build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240   # 延长超时，避免大构建被杀掉
 
     steps:
     - name: Checkout
@@ -40,27 +39,24 @@ jobs:
       uses: actions/cache@v3
       with:
         path: /mnt/ccache
-        key: ${{ runner.os }}-ccache-${{ github.ref }}-${{ github.sha }}
+        key: ${{ runner.os }}-ccache-${{ github.ref }}
         restore-keys: |
-          ${{ runner.os }}-ccache-${{ github.ref }}
           ${{ runner.os }}-ccache
 
     - name: Cache dl sources
       uses: actions/cache@v3
       with:
         path: /mnt/dl
-        key: ${{ runner.os }}-dl-${{ github.ref }}-${{ github.sha }}
+        key: ${{ runner.os }}-dl-${{ github.ref }}
         restore-keys: |
-          ${{ runner.os }}-dl-${{ github.ref }}
           ${{ runner.os }}-dl
 
     - name: Cache toolchain
       uses: actions/cache@v3
       with:
         path: /mnt/staging/toolchain-*
-        key: ${{ runner.os }}-toolchain-${{ github.ref }}-${{ github.sha }}
+        key: ${{ runner.os }}-toolchain-${{ github.ref }}
         restore-keys: |
-          ${{ runner.os }}-toolchain-${{ github.ref }}
           ${{ runner.os }}-toolchain
 
     - name: Install dependencies
@@ -107,7 +103,7 @@ jobs:
         make tools/install -j1 V=s | tee /mnt/openwrt/build_tools.log
         make toolchain/install -j1 V=s | tee /mnt/openwrt/build_toolchain.log
         rm -rf bin tmp build_dir/target-*/root-*/.*tmp || true
-        make -j$(($(nproc)-1)) V=s | tee /mnt/openwrt/build_world.log || make -j1 V=s | tee /mnt/openwrt/build_world.log
+        make -j2 V=s | tee /mnt/openwrt/build_world.log || make -j1 V=s | tee /mnt/openwrt/build_world.log
         ccache -s || true
 
     - name: Dump diffconfig
