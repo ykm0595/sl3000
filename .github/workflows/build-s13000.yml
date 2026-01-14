@@ -75,14 +75,22 @@ jobs:
           if timeout 20m make tools/install -j$(nproc); then echo "tools ok"; else make tools/install -j1 V=s; fi
           if timeout 20m make toolchain/install -j$(nproc); then echo "toolchain ok"; else make toolchain/install -j1 V=s; fi
 
-      - name: 自动添加 DTS Makefile 条目
-        run: grep -q "${DTS_NAME}.dtb" "${DTS_MK}" || echo "dtb-y += ${DTS_NAME}.dtb" >> "${DTS_MK}"
+      - name: 自动创建 DTS Makefile 条目
+        run: |
+          mkdir -p $(dirname "${DTS_MK}")
+          test -f "${DTS_MK}" || echo "# SPDX-License-Identifier: GPL-2.0-only" > "${DTS_MK}"
+          grep -q "${DTS_NAME}.dtb" "${DTS_MK}" || echo "dtb-y += ${DTS_NAME}.dtb" >> "${DTS_MK}"
 
       - name: 检查 DTS/mk/profile 对齐
         run: |
           test -f "${DTS_FILE}" || { echo "❌ DTS 缺失"; exit 1; }
           grep -q "${DTS_NAME}.dtb" "${DTS_MK}" || { echo "❌ DTS_MK 缺少条目"; exit 1; }
           grep -q "${PROFILE}" "${MK_FILE}" || { echo "❌ MK_FILE 缺少 profile"; exit 1; }
+
+      - name: 跳过无关补丁
+        run: |
+          echo "ℹ️ 跳过 patches-6.12 目录中的无关补丁"
+          rm -rf target/linux/mediatek/patches-6.12 || true
 
       - name: DTS 编译检查
         run: |
